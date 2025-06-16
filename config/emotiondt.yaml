@@ -1,6 +1,6 @@
 dataset_params:
-  csv_path: './data_in/Merged.csv'
-  im_path: './data_in'
+  csv_path: './data/Merged.csv'
+  im_path: './data'
   im_channels : 3
   im_size : 128
   name: 'emotiondt'
