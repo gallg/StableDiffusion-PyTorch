@@ -12,6 +12,7 @@ from models.discriminator import Discriminator
 from torch.utils.data.dataloader import DataLoader
 from dataset.mnist_dataset import MnistDataset
 from dataset.celeb_dataset import CelebDataset
+from dataset.emotion_dataset import EmotionDataset
 from torch.optim import Adam
 from torchvision.utils import make_grid
 
@@ -26,11 +27,11 @@ def train(args):
         except yaml.YAMLError as exc:
             print(exc)
     print(config)
-    
+
     dataset_config = config['dataset_params']
     autoencoder_config = config['autoencoder_params']
     train_config = config['train_params']
-    
+
     # Set the desired seed value #
     seed = train_config['seed']
     torch.manual_seed(seed)
@@ -39,7 +40,7 @@ def train(args):
     if device == 'cuda':
         torch.cuda.manual_seed_all(seed)
     #############################
-    
+
     # Create the model and dataset #
     model = VQVAE(im_channels=dataset_config['im_channels'],
                   model_config=autoencoder_config).to(device)
@@ -47,44 +48,46 @@ def train(args):
     im_dataset_cls = {
         'mnist': MnistDataset,
         'celebhq': CelebDataset,
+        'emotiondt': EmotionDataset
     }.get(dataset_config['name'])
-    
+
     im_dataset = im_dataset_cls(split='train',
+                                csv_path=dataset_config['csv_path'],
                                 im_path=dataset_config['im_path'],
                                 im_size=dataset_config['im_size'],
                                 im_channels=dataset_config['im_channels'])
-    
+
     data_loader = DataLoader(im_dataset,
                              batch_size=train_config['autoencoder_batch_size'],
                              shuffle=True)
-    
+
     # Create output directories
     if not os.path.exists(train_config['task_name']):
         os.mkdir(train_config['task_name'])
-        
+
     num_epochs = train_config['autoencoder_epochs']
 
     # L1/L2 loss for Reconstruction
     recon_criterion = torch.nn.MSELoss()
     # Disc Loss can even be BCEWithLogits
     disc_criterion = torch.nn.MSELoss()
-    
+
     # No need to freeze lpips as lpips.py takes care of that
     lpips_model = LPIPS().eval().to(device)
     discriminator = Discriminator(im_channels=dataset_config['im_channels']).to(device)
-    
+
     optimizer_d = Adam(discriminator.parameters(), lr=train_config['autoencoder_lr'], betas=(0.5, 0.999))
     optimizer_g = Adam(model.parameters(), lr=train_config['autoencoder_lr'], betas=(0.5, 0.999))
-    
+
     disc_step_start = train_config['disc_start']
     step_count = 0
-    
+
     # This is for accumulating gradients incase the images are huge
     # And one cant afford higher batch sizes
     acc_steps = train_config['autoencoder_acc_steps']
     image_save_steps = train_config['autoencoder_img_save_steps']
     img_save_count = 0
-    
+
     for epoch_idx in range(num_epochs):
         recon_losses = []
         codebook_losses = []
@@ -93,25 +96,25 @@ def train(args):
         disc_losses = []
         gen_losses = []
         losses = []
-        
+
         optimizer_g.zero_grad()
         optimizer_d.zero_grad()
-        
+
         for im in tqdm(data_loader):
             step_count += 1
             im = im.float().to(device)
-            
+
             # Fetch autoencoders output(reconstructions)
             model_output = model(im)
             output, z, quantize_losses = model_output
-            
+
             # Image Saving Logic
             if step_count % image_save_steps == 0 or step_count == 1:
                 sample_size = min(8, im.shape[0])
                 save_output = torch.clamp(output[:sample_size], -1., 1.).detach().cpu()
                 save_output = ((save_output + 1) / 2)
                 save_input = ((im[:sample_size] + 1) / 2).detach().cpu()
-                
+
                 grid = make_grid(torch.cat([save_input, save_output], dim=0), nrow=sample_size)
                 img = torchvision.transforms.ToPILImage()(grid)
                 if not os.path.exists(os.path.join(train_config['task_name'],'vqvae_autoencoder_samples')):
@@ -120,7 +123,7 @@ def train(args):
                                       'current_autoencoder_sample_{}.png'.format(img_save_count)))
                 img_save_count += 1
                 img.close()
-            
+
             ######### Optimize Generator ##########
             # L2 Loss
             recon_loss = recon_criterion(output, im) 
@@ -144,7 +147,7 @@ def train(args):
             losses.append(g_loss.item())
             g_loss.backward()
             #####################################
-            
+
             ######### Optimize Discriminator #######
             if step_count > disc_step_start:
                 fake = output
@@ -164,7 +167,7 @@ def train(args):
                     optimizer_d.step()
                     optimizer_d.zero_grad()
             #####################################
-            
+
             if step_count % acc_steps == 0:
                 optimizer_g.step()
                 optimizer_g.zero_grad()
@@ -188,7 +191,7 @@ def train(args):
                          np.mean(recon_losses),
                          np.mean(perceptual_losses),
                          np.mean(codebook_losses)))
-        
+
         torch.save(model.state_dict(), os.path.join(train_config['task_name'],
                                                     train_config['vqvae_autoencoder_ckpt_name']))
         torch.save(discriminator.state_dict(), os.path.join(train_config['task_name'],
